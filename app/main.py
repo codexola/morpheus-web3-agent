@@ -5,8 +5,10 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app import __version__
 from app.api import callbacks, health, tasks, verify
@@ -16,6 +18,26 @@ from app.core.logging import get_logger, new_request_id, setup_logging
 
 setup_logging()
 logger = get_logger(__name__)
+
+
+class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        settings = get_settings()
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit():
+            if int(content_length) > settings.max_json_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "success": False,
+                        "error": {
+                            "code": "INVALID_REQUEST",
+                            "message": "Payload exceeds size limit.",
+                            "retryable": False,
+                        },
+                    },
+                )
+        return await call_next(request)
 
 
 @asynccontextmanager
@@ -42,6 +64,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(PayloadSizeLimitMiddleware)
 
 app.include_router(health.router)
 app.include_router(verify.router)
@@ -59,6 +82,25 @@ async def request_context(request: Request, call_next):
 @app.exception_handler(AgentError)
 async def agent_error_handler(_request: Request, exc: AgentError):
     return JSONResponse(status_code=exc.status_code, content=error_body(exc))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_request: Request, exc: RequestValidationError):
+    messages = []
+    for err in exc.errors():
+        loc = ".".join(str(x) for x in err.get("loc", []) if x != "body")
+        messages.append(f"{loc}: {err.get('msg')}" if loc else str(err.get("msg")))
+    return JSONResponse(
+        status_code=422,
+        content={
+            "success": False,
+            "error": {
+                "code": "INVALID_REQUEST",
+                "message": "; ".join(messages) or "Request validation failed.",
+                "retryable": False,
+            },
+        },
+    )
 
 
 @app.get("/")
@@ -106,8 +148,8 @@ async def capabilities():
             "id": "blockchain_analytics",
             "name": "Blockchain Analytics",
             "description": (
-                "On-chain analysis of wallets, transactions, and contract interactions across "
-                "Ethereum, Base, Arbitrum, Polygon, and Solana."
+                "On-chain analysis of native balances, contract detection, and transactions "
+                "across Ethereum, Base, Arbitrum, Polygon, and Solana."
             ),
         },
         "web3_research": {

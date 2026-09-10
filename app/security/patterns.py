@@ -131,7 +131,10 @@ def analyze_solidity(source: str, filename: str = "Contract.sol") -> list[Findin
     seen: set[str] = set()
     for rule in RULES:
         for match in rule.regex.finditer(source):
-            if rule.exclude and rule.exclude.search(source[max(0, match.start() - 120) : match.end() + 120]):
+            window = source[max(0, match.start() - 200) : match.end() + 200]
+            if rule.exclude and rule.exclude.search(window):
+                continue
+            if rule.requires and not rule.requires.search(window):
                 continue
             key = f"{rule.id}:{line_of(source, match.start())}"
             if key in seen:

@@ -3,13 +3,28 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 ServiceState = Literal["RUNNING", "DEGRADED", "MAINTENANCE", "DISABLED"]
+
+_DEFAULT_ETH = "https://ethereum.publicnode.com"
+_DEFAULT_BASE = "https://mainnet.base.org"
+_DEFAULT_ARB = "https://arb1.arbitrum.io/rpc"
+_DEFAULT_POLYGON = "https://polygon-rpc.com"
+_DEFAULT_SOLANA = "https://api.mainnet-beta.solana.com"
+
+
+def _empty_as_none(value: Any) -> Any:
+    """Treat blank env vars as unset so Field defaults still apply."""
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
 
 
 class Settings(BaseSettings):
@@ -20,7 +35,7 @@ class Settings(BaseSettings):
     )
 
     agent_name: str = Field(default="Web3Dev AI", alias="AGENT_NAME")
-    agent_version: str = Field(default="1.0.0", alias="AGENT_VERSION")
+    agent_version: str = Field(default="1.0.1", alias="AGENT_VERSION")
     agent_description: str = Field(
         default=(
             "Autonomous Web3 and AI development agent providing smart-contract "
@@ -42,6 +57,7 @@ class Settings(BaseSettings):
         alias="MORPHEUS_API_URL",
     )
     callback_shared_secret: str = Field(default="", alias="CALLBACK_SHARED_SECRET")
+    require_shared_secret: bool = Field(default=False, alias="REQUIRE_SHARED_SECRET")
 
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     primary_model: str = Field(default="gpt-4o-mini", alias="PRIMARY_MODEL")
@@ -52,20 +68,11 @@ class Settings(BaseSettings):
     database_url: str = Field(default="", alias="DATABASE_URL")
     redis_url: str = Field(default="", alias="REDIS_URL")
 
-    eth_rpc_url: str = Field(default="https://ethereum.publicnode.com", alias="ETH_RPC_URL")
-    base_rpc_url: str = Field(default="https://mainnet.base.org", alias="BASE_RPC_URL")
-    arbitrum_rpc_url: str = Field(
-        default="https://arb1.arbitrum.io/rpc",
-        alias="ARBITRUM_RPC_URL",
-    )
-    polygon_rpc_url: str = Field(
-        default="https://polygon-rpc.com",
-        alias="POLYGON_RPC_URL",
-    )
-    solana_rpc_url: str = Field(
-        default="https://api.mainnet-beta.solana.com",
-        alias="SOLANA_RPC_URL",
-    )
+    eth_rpc_url: str = Field(default=_DEFAULT_ETH, alias="ETH_RPC_URL")
+    base_rpc_url: str = Field(default=_DEFAULT_BASE, alias="BASE_RPC_URL")
+    arbitrum_rpc_url: str = Field(default=_DEFAULT_ARB, alias="ARBITRUM_RPC_URL")
+    polygon_rpc_url: str = Field(default=_DEFAULT_POLYGON, alias="POLYGON_RPC_URL")
+    solana_rpc_url: str = Field(default=_DEFAULT_SOLANA, alias="SOLANA_RPC_URL")
 
     max_agent_steps: int = Field(default=12, alias="MAX_AGENT_STEPS")
     max_tool_calls: int = Field(default=25, alias="MAX_TOOL_CALLS")
@@ -79,7 +86,7 @@ class Settings(BaseSettings):
 
     rpc_timeout_seconds: float = 10.0
     http_timeout_seconds: float = 15.0
-    llm_timeout_seconds: float = 90.0
+    llm_timeout_seconds: float = 60.0
 
     mvp_capabilities: tuple[str, ...] = (
         "smart_contract_audit",
@@ -88,6 +95,44 @@ class Settings(BaseSettings):
         "web3_research",
     )
 
+    @field_validator("eth_rpc_url", mode="before")
+    @classmethod
+    def default_eth(cls, value: Any) -> Any:
+        return _empty_as_none(value) or _DEFAULT_ETH
+
+    @field_validator("base_rpc_url", mode="before")
+    @classmethod
+    def default_base(cls, value: Any) -> Any:
+        return _empty_as_none(value) or _DEFAULT_BASE
+
+    @field_validator("arbitrum_rpc_url", mode="before")
+    @classmethod
+    def default_arb(cls, value: Any) -> Any:
+        return _empty_as_none(value) or _DEFAULT_ARB
+
+    @field_validator("polygon_rpc_url", mode="before")
+    @classmethod
+    def default_polygon(cls, value: Any) -> Any:
+        return _empty_as_none(value) or _DEFAULT_POLYGON
+
+    @field_validator("solana_rpc_url", mode="before")
+    @classmethod
+    def default_solana(cls, value: Any) -> Any:
+        return _empty_as_none(value) or _DEFAULT_SOLANA
+
+    @field_validator(
+        "openai_api_key",
+        "database_url",
+        "redis_url",
+        "morpheus_shared_secret",
+        "callback_shared_secret",
+        "sentry_dsn",
+        mode="before",
+    )
+    @classmethod
+    def blank_secret_to_empty(cls, value: Any) -> Any:
+        return _empty_as_none(value) or ""
+
     @property
     def commit(self) -> str:
         return self.commit_sha or self.vercel_git_commit_sha or "local"
@@ -95,6 +140,10 @@ class Settings(BaseSettings):
     @property
     def accepts_tasks(self) -> bool:
         return self.service_state == "RUNNING"
+
+    @property
+    def is_online(self) -> bool:
+        return self.service_state in {"RUNNING", "DEGRADED"}
 
 
 @lru_cache

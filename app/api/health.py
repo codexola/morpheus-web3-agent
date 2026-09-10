@@ -13,7 +13,7 @@ router = APIRouter(tags=["health"])
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     settings = get_settings()
-    status = "healthy" if settings.service_state in {"RUNNING", "DEGRADED"} else "unhealthy"
+    status = "healthy" if settings.is_online else "unhealthy"
     return HealthResponse(
         status=status,
         version=settings.agent_version,

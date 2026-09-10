@@ -44,3 +44,5 @@ data/
 # Logs
 *.log
 logs/
+.vercel
+.env*

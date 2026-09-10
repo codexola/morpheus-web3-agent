@@ -9,6 +9,7 @@ from app.llm.client import get_llm
 from app.llm.prompts import SMART_CONTRACT_SYSTEM
 from app.models.response import Finding, SecurityReport
 from app.models.task import InternalTask
+from app.security.merge import merge_findings
 from app.security.patterns import analyze_solidity
 from app.security.severity import sort_findings
 from app.security.solidity import validate_solidity_source
@@ -26,7 +27,6 @@ class SmartContractAgent:
             or ""
         )
         if not source and task.description:
-            # Allow description-only with embedded code fences
             source = task.description
         if not source.strip():
             raise InvalidContractError("Provide Solidity source_code in input.")
@@ -44,16 +44,17 @@ class SmartContractAgent:
                         f"Static findings JSON:\n{[f.model_dump() for f in findings]}\n\n"
                         f"Source (untrusted):\n```solidity\n{source[:12000]}\n```"
                     ),
-                    model=None,
                 )
-                llm_findings = []
+                llm_findings: list[Finding] = []
                 for i, item in enumerate(enriched.get("findings") or []):
                     try:
-                        llm_findings.append(Finding(**{**item, "id": item.get("id") or f"LLM-{i+1:03d}"}))
+                        llm_findings.append(
+                            Finding(**{**item, "id": item.get("id") or f"LLM-{i+1:03d}"})
+                        )
                     except Exception:
                         continue
                 if llm_findings:
-                    findings = llm_findings
+                    findings = merge_findings(findings, llm_findings)
             except Exception:
                 pass
 

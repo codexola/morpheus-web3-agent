@@ -13,13 +13,13 @@ router = APIRouter(tags=["morpheus"])
 @router.get("/morpheus/verify", response_model=VerifyResponse)
 async def morpheus_verify() -> VerifyResponse:
     settings = get_settings()
-    online = settings.service_state in {"RUNNING", "DEGRADED"}
     return VerifyResponse(
         status="ok",
         agent={
             "name": settings.agent_name,
             "version": settings.agent_version,
-            "online": online,
+            "online": settings.is_online,
+            "accepting_tasks": settings.accepts_tasks,
             "state": settings.service_state,
             "description": settings.agent_description,
         },

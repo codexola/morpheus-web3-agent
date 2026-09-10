@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -12,6 +13,41 @@ from app.core.security import assert_safe_url
 from app.llm.client import get_llm
 from app.llm.prompts import RESEARCH_SYSTEM
 from app.models.task import InternalTask
+
+
+async def _safe_fetch(url: str) -> tuple[str, list[dict[str, str]]]:
+    """Fetch URL without following unsafe redirects."""
+    settings = get_settings()
+    sources: list[dict[str, str]] = []
+    current = assert_safe_url(url)
+    live_excerpt = ""
+
+    async with httpx.AsyncClient(
+        timeout=settings.http_timeout_seconds,
+        follow_redirects=False,
+        headers={"User-Agent": "Web3DevAI/1.0 (+research)"},
+    ) as client:
+        for _ in range(5):
+            resp = await client.get(current)
+            if resp.status_code in {301, 302, 303, 307, 308}:
+                location = resp.headers.get("location")
+                if not location:
+                    sources.append({"url": current, "status": "redirect_missing_location"})
+                    break
+                next_url = urljoin(current, location)
+                # Re-validate every hop (blocks redirect-to-metadata SSRF)
+                current = assert_safe_url(next_url)
+                continue
+            if resp.status_code >= 400:
+                sources.append({"url": current, "status": f"http_{resp.status_code}"})
+                break
+            live_excerpt = resp.text[:8000]
+            sources.append({"url": current, "status": "fetched"})
+            break
+        else:
+            sources.append({"url": current, "status": "redirect_limit"})
+
+    return live_excerpt, sources
 
 
 class ResearchAgent:
@@ -28,28 +64,18 @@ class ResearchAgent:
             raise InvalidRequestError("Provide a research query/description.")
 
         sources: list[dict[str, str]] = []
-        url = task.input.get("url")
         live_excerpt = ""
+        url = task.input.get("url")
         if url:
-            safe = assert_safe_url(url)
-            settings = get_settings()
             try:
-                async with httpx.AsyncClient(
-                    timeout=settings.http_timeout_seconds,
-                    follow_redirects=True,
-                ) as client:
-                    resp = await client.get(
-                        safe,
-                        headers={"User-Agent": "Web3DevAI/1.0 (+research)"},
-                    )
-                    if resp.status_code < 400:
-                        text = resp.text[:8000]
-                        live_excerpt = text
-                        sources.append({"url": safe, "status": "fetched"})
-                    else:
-                        sources.append({"url": safe, "status": f"http_{resp.status_code}"})
+                live_excerpt, sources = await _safe_fetch(url)
             except Exception as exc:
-                sources.append({"url": safe, "status": f"error:{type(exc).__name__}"})
+                sources.append(
+                    {
+                        "url": str(urlparse(str(url)).geturl()),
+                        "status": f"error:{type(exc).__name__}",
+                    }
+                )
 
         llm = get_llm()
         if llm.available:
@@ -69,7 +95,6 @@ class ResearchAgent:
             except Exception:
                 pass
 
-        # Deterministic offline/fallback report
         return {
             "capability": self.capability,
             "mode": "heuristic-fallback",

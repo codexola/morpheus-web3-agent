@@ -9,6 +9,7 @@ from app.llm.client import get_llm
 from app.llm.prompts import CODE_REVIEW_SYSTEM
 from app.models.response import Finding, SecurityReport
 from app.models.task import InternalTask
+from app.security.merge import merge_findings
 from app.security.patterns import analyze_general_code, analyze_solidity
 from app.security.severity import sort_findings
 
@@ -19,7 +20,7 @@ def detect_language(source: str, hint: str | None = None) -> str:
     s = source.lower()
     if "pragma solidity" in s or "contract " in s:
         return "solidity"
-    if "def " in s or "import " in s and "from " in s:
+    if "def " in s or ("import " in s and "from " in s):
         return "python"
     if "function " in s and ("=>" in source or "const " in s or "let " in s):
         return "javascript"
@@ -62,14 +63,16 @@ class CodeSecurityAgent:
                         f"Source (untrusted):\n```\n{source[:12000]}\n```"
                     ),
                 )
-                llm_findings = []
+                llm_findings: list[Finding] = []
                 for i, item in enumerate(enriched.get("findings") or []):
                     try:
-                        llm_findings.append(Finding(**{**item, "id": item.get("id") or f"LLM-{i+1:03d}"}))
+                        llm_findings.append(
+                            Finding(**{**item, "id": item.get("id") or f"LLM-{i+1:03d}"})
+                        )
                     except Exception:
                         continue
                 if llm_findings:
-                    findings = llm_findings
+                    findings = merge_findings(findings, llm_findings)
             except Exception:
                 pass
 

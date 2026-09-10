@@ -108,3 +108,30 @@ async def test_unsupported_capability(client):
     body = r.json()
     assert body["status"] == "failed"
     assert body["error"]["code"] == "UNSUPPORTED_CAPABILITY"
+
+
+@pytest.mark.asyncio
+async def test_validation_error_shape(client):
+    r = await client.post("/api/tasks", json={"description": "missing capability"})
+    assert r.status_code == 422
+    body = r.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "INVALID_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_unsupported_chain_analytics(client):
+    r = await client.post(
+        "/api/tasks",
+        json={
+            "capability": "blockchain_analytics",
+            "input": {
+                "chain": "optimism",
+                "address": "0x" + "1" * 40,
+            },
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "failed"
+    assert body["error"]["code"] == "INVALID_REQUEST"
