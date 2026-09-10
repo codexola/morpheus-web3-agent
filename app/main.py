@@ -15,8 +15,11 @@ from app.api import callbacks, health, tasks, verify
 from app.core.config import get_settings
 from app.core.exceptions import AgentError, error_body
 from app.core.logging import get_logger, new_request_id, setup_logging
+from app.core.sentry import init_sentry
 
+# Sentry must initialize before the FastAPI app is constructed.
 setup_logging()
+init_sentry()
 logger = get_logger(__name__)
 
 
@@ -43,10 +46,8 @@ class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     settings = get_settings()
-    from app.core.sentry import init_sentry
     from app.db.connection import close_pool, db_enabled, init_schema
 
-    init_sentry()
     if db_enabled():
         try:
             await init_schema()
@@ -133,8 +134,16 @@ async def root():
             "/api/tasks/{task_id}",
             "/callbacks/morpheus",
             "/version",
+            "/sentry-debug",
         ],
     }
+
+
+@app.get("/sentry-debug")
+async def sentry_debug():
+    """Intentional error to verify Sentry issue capture (Sentry FastAPI docs)."""
+    # Equivalent verification to calling an undefined function in JS examples.
+    my_undefined_function()  # noqa: F821
 
 
 @app.get("/capabilities")
@@ -183,6 +192,7 @@ async def capabilities():
 @app.get("/version")
 async def version():
     settings = get_settings()
+    from app.core.sentry import _initialized as sentry_on
     from app.db.connection import db_enabled
 
     return {
@@ -192,4 +202,6 @@ async def version():
         "environment": settings.environment,
         "state": settings.service_state,
         "database": "neon" if db_enabled() else "memory",
+        "sentry": "enabled" if sentry_on else "disabled",
+        "openai": "configured" if bool(settings.openai_api_key) else "missing",
     }

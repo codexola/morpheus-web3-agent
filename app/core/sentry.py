@@ -1,6 +1,8 @@
-"""Optional Sentry initialization."""
+"""Sentry SDK initialization for FastAPI (must run before app creation)."""
 
 from __future__ import annotations
+
+import os
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -10,21 +12,37 @@ _initialized = False
 
 
 def init_sentry() -> bool:
+    """Initialize Sentry as early as possible in the process lifecycle."""
     global _initialized
     if _initialized:
         return True
-    settings = get_settings()
-    if not settings.sentry_dsn:
+
+    dsn = (os.getenv("SENTRY_DSN") or get_settings().sentry_dsn or "").strip()
+    if not dsn:
         return False
+
     try:
         import sentry_sdk
         from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.starlette import StarletteIntegration
+        from sentry_sdk.integrations.logging import LoggingIntegration
+
+        settings = get_settings()
+        release = f"web3dev-ai@{settings.agent_version}"
+        if settings.commit and settings.commit != "local":
+            release = f"{release}+{settings.commit[:12]}"
 
         sentry_sdk.init(
-            dsn=settings.sentry_dsn,
-            environment=settings.environment,
-            traces_sample_rate=0.1,
-            integrations=[FastApiIntegration()],
+            dsn=dsn,
+            environment=settings.environment or os.getenv("VERCEL_ENV") or "development",
+            release=release,
+            send_default_pii=True,
+            traces_sample_rate=1.0 if settings.environment != "production" else 0.2,
+            integrations=[
+                StarletteIntegration(transaction_style="endpoint"),
+                FastApiIntegration(transaction_style="endpoint"),
+                LoggingIntegration(level=None, event_level=None),
+            ],
         )
         _initialized = True
         logger.info("sentry_initialized", extra={"status": "ok"})
