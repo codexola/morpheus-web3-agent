@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app import __version__
-from app.api import callbacks, health, tasks, verify
+from app.api import callbacks, health, openai_compat, tasks, verify
+from app.api.openai_compat import ChatCompletionRequest, create_chat_completion
 from app.core.config import get_settings
 from app.core.exceptions import AgentError, error_body
 from app.core.logging import get_logger, new_request_id, setup_logging
@@ -84,6 +85,7 @@ app.include_router(health.router)
 app.include_router(verify.router)
 app.include_router(tasks.router)
 app.include_router(callbacks.router)
+app.include_router(openai_compat.router)
 
 
 @app.middleware("http")
@@ -126,6 +128,7 @@ async def root():
         "version": settings.agent_version,
         "status": settings.service_state,
         "docs": "/docs",
+        "openai_compatible": True,
         "endpoints": [
             "/health",
             "/morpheus/verify",
@@ -134,9 +137,20 @@ async def root():
             "/api/tasks/{task_id}",
             "/callbacks/morpheus",
             "/version",
+            "/v1/models",
+            "/v1/chat/completions",
             "/sentry-debug",
         ],
     }
+
+
+@app.post("/")
+async def root_chat_completions(
+    body: ChatCompletionRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Morpheus Arena OPENAI format posts to the endpoint root → avoid HTTP 405."""
+    return await create_chat_completion(body, authorization)
 
 
 @app.get("/sentry-debug")

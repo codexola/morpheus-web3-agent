@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     )
 
     agent_name: str = Field(default="Web3Dev AI", alias="AGENT_NAME")
-    agent_version: str = Field(default="1.1.1", alias="AGENT_VERSION")
+    agent_version: str = Field(default="1.2.0", alias="AGENT_VERSION")
     agent_description: str = Field(
         default=(
             "Autonomous Web3 and AI development agent providing smart-contract "
