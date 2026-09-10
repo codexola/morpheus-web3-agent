@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0 — 2026-09-10
+
+- Neon Postgres via Vercel Marketplace for durable tasks, events, and audit logs.
+- Schema auto-migrates on startup; `/health` reports database status.
+- Optional Upstash Redis rate limiting (REST) with memory fallback.
+- Optional Sentry initialization when `SENTRY_DSN` is configured.
+- Docs: `docs/manual-setup.md` for secrets that require manual action.
+
 ## 1.0.1 — 2026-09-10
 
 - Harden production reliability: blank RPC env vars no longer wipe defaults.

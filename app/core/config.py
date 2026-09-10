@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     )
 
     agent_name: str = Field(default="Web3Dev AI", alias="AGENT_NAME")
-    agent_version: str = Field(default="1.0.1", alias="AGENT_VERSION")
+    agent_version: str = Field(default="1.1.0", alias="AGENT_VERSION")
     agent_description: str = Field(
         default=(
             "Autonomous Web3 and AI development agent providing smart-contract "
@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     reasoning_model: str = Field(default="gpt-4o", alias="REASONING_MODEL")
 
     database_url: str = Field(default="", alias="DATABASE_URL")
+    postgres_url: str = Field(default="", alias="POSTGRES_URL")
     redis_url: str = Field(default="", alias="REDIS_URL")
 
     eth_rpc_url: str = Field(default=_DEFAULT_ETH, alias="ETH_RPC_URL")
@@ -123,6 +124,7 @@ class Settings(BaseSettings):
     @field_validator(
         "openai_api_key",
         "database_url",
+        "postgres_url",
         "redis_url",
         "morpheus_shared_secret",
         "callback_shared_secret",
@@ -132,6 +134,10 @@ class Settings(BaseSettings):
     @classmethod
     def blank_secret_to_empty(cls, value: Any) -> Any:
         return _empty_as_none(value) or ""
+
+    @property
+    def resolved_database_url(self) -> str:
+        return self.database_url or self.postgres_url or ""
 
     @property
     def commit(self) -> str:

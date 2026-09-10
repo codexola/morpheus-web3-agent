@@ -43,11 +43,24 @@ class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     settings = get_settings()
+    from app.core.sentry import init_sentry
+    from app.db.connection import close_pool, db_enabled, init_schema
+
+    init_sentry()
+    if db_enabled():
+        try:
+            await init_schema()
+        except Exception as exc:
+            logger.error(
+                "database_schema_failed",
+                extra={"error_class": type(exc).__name__, "status": "error"},
+            )
     logger.info(
         "startup",
         extra={"status": "ok", "capability": ",".join(settings.mvp_capabilities)},
     )
     yield
+    await close_pool()
     logger.info("shutdown", extra={"status": "ok"})
 
 
@@ -170,10 +183,13 @@ async def capabilities():
 @app.get("/version")
 async def version():
     settings = get_settings()
+    from app.db.connection import db_enabled
+
     return {
         "service": "web3dev-ai",
         "version": settings.agent_version,
         "commit": settings.commit,
         "environment": settings.environment,
         "state": settings.service_state,
+        "database": "neon" if db_enabled() else "memory",
     }

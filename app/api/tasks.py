@@ -7,9 +7,10 @@ import time
 from fastapi import APIRouter, Depends, Request
 
 from app.core.config import get_settings
-from app.core.exceptions import AgentError, InvalidRequestError
+from app.core.exceptions import AgentError
 from app.core.logging import get_logger
-from app.core.security import client_ip, rate_limiter, require_optional_shared_secret
+from app.core.rate_limit import check_rate_limit
+from app.core.security import client_ip, require_optional_shared_secret
 from app.models.task import TaskSubmitRequest
 from app.services import tasks as task_service
 from app.services.results import public_result
@@ -18,13 +19,15 @@ router = APIRouter(prefix="/api", tags=["tasks"])
 logger = get_logger(__name__)
 
 
-def _enforce_size_and_rate(request: Request) -> None:
+async def _enforce_size_and_rate(request: Request) -> None:
     settings = get_settings()
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit():
         if int(content_length) > settings.max_json_bytes:
+            from app.core.exceptions import InvalidRequestError
+
             raise InvalidRequestError("Payload exceeds size limit.")
-    rate_limiter.check(client_ip(request), settings.rate_limit_per_minute)
+    await check_rate_limit(client_ip(request), settings.rate_limit_per_minute)
 
 
 @router.post("/tasks")
@@ -33,7 +36,7 @@ async def create_task(
     body: TaskSubmitRequest,
     _: None = Depends(require_optional_shared_secret),
 ) -> dict:
-    _enforce_size_and_rate(request)
+    await _enforce_size_and_rate(request)
     started = time.time()
     task = await task_service.submit_and_process(body)
     duration_ms = int((time.time() - started) * 1000)
@@ -69,7 +72,4 @@ async def create_task_v1(
     body: TaskSubmitRequest,
     _: None = Depends(require_optional_shared_secret),
 ) -> dict:
-    _enforce_size_and_rate(request)
-    started = time.time()
-    task = await task_service.submit_and_process(body)
-    return public_result(task)
+    return await create_task(request, body, _)

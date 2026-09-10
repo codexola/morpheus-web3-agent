@@ -43,7 +43,8 @@ OpenAPI docs: http://localhost:8000/docs
 vercel --prod
 ```
 
-Set environment variables in the Vercel project (see `.env.example`). Prefer a custom domain such as `https://agent.yourdomain.com` when registering with Morpheus.
+Neon Postgres is provisioned via the Vercel Marketplace (`DATABASE_URL`).  
+See `docs/manual-setup.md` for secrets you must add yourself (OpenAI, Sentry, Upstash terms, etc.).
 
 ## Security notes
 
