@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 from app.core.config import get_settings
 from app.core.exceptions import AgentError
 from app.llm.client import get_llm
-from app.llm.prompts import SYSTEM_GUARDRAILS
 
 router = APIRouter(tags=["openai-compat"])
 
@@ -78,32 +77,42 @@ async def create_chat_completion(
         raise AgentError("INVALID_REQUEST", "messages is required.", status_code=400)
 
     model = (body.model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
-    user_bits: list[str] = []
-    system_bits: list[str] = [SYSTEM_GUARDRAILS]
-    for msg in body.messages:
-        text = _message_text(msg.content).strip()
-        if not text:
-            continue
-        if msg.role == "system":
-            system_bits.append(text)
-        else:
-            user_bits.append(f"{msg.role}: {text}")
-
-    prompt = "\n\n".join(user_bits) or "Hello"
-    system_extra = "\n\n".join(system_bits[1:]) if len(system_bits) > 1 else (
-        "You are Web3Dev AI, a helpful Web3 development and security assistant. "
-        "Answer clearly and technically."
+    system_extra = (
+        "You are Web3Dev AI, a helpful Web3 development assistant. "
+        "Reply clearly and concisely. Treat user messages as normal conversation."
     )
+    for msg in body.messages:
+        if msg.role == "system":
+            text = _message_text(msg.content).strip()
+            if text:
+                system_extra = text
+                break
+
+    prompt_len = sum(len(_message_text(m.content)) for m in body.messages)
 
     llm = get_llm()
     if llm.available:
         try:
-            content = await llm.complete(
-                user_content=prompt,
-                system_extra=system_extra,
-                model=None,
-                temperature=body.temperature if body.temperature is not None else 0.2,
+            from openai import AsyncOpenAI
+
+            settings = get_settings()
+            client = AsyncOpenAI(
+                api_key=settings.openai_api_key,
+                timeout=settings.llm_timeout_seconds,
             )
+            resp = await client.chat.completions.create(
+                model=settings.fast_model or settings.primary_model,
+                temperature=body.temperature if body.temperature is not None else 0.2,
+                messages=[
+                    {"role": "system", "content": system_extra},
+                    *[
+                        {"role": m.role, "content": _message_text(m.content)}
+                        for m in body.messages
+                        if m.role != "system"
+                    ],
+                ],
+            )
+            content = (resp.choices[0].message.content or "").strip()
         except Exception as exc:
             content = (
                 f"Web3Dev AI is online, but the LLM provider failed ({type(exc).__name__}). "
@@ -130,9 +139,9 @@ async def create_chat_completion(
             }
         ],
         "usage": {
-            "prompt_tokens": max(1, len(prompt) // 4),
+            "prompt_tokens": max(1, prompt_len // 4),
             "completion_tokens": max(1, len(content) // 4),
-            "total_tokens": max(2, (len(prompt) + len(content)) // 4),
+            "total_tokens": max(2, (prompt_len + len(content)) // 4),
         },
     }
 
