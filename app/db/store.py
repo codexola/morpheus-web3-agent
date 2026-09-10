@@ -172,7 +172,9 @@ class PostgresTaskStore:
                 )
                 return task, True
 
-    async def claim_for_processing(self, task_id: str) -> tuple[InternalTask | None, bool]:
+    async def claim_for_processing(
+        self, task_id: str, *, stale_after_seconds: float = 90.0
+    ) -> tuple[InternalTask | None, bool]:
         pool = await get_pool()
         assert pool is not None
         async with pool.acquire() as conn:
@@ -184,13 +186,14 @@ class PostgresTaskStore:
                 if not row:
                     return None, False
                 task = _row_to_task(row)
-                if task.status in {
-                    TaskStatus.SUCCESS,
-                    TaskStatus.FAILED,
-                    TaskStatus.PROCESSING,
-                }:
-                    return task, False
                 now = datetime.now(timezone.utc)
+                if task.status in {TaskStatus.SUCCESS, TaskStatus.FAILED}:
+                    return task, False
+                if task.status == TaskStatus.PROCESSING:
+                    started = task.started_at or task.created_at
+                    age = (now - started).total_seconds()
+                    if age < stale_after_seconds:
+                        return task, False
                 await conn.execute(
                     """
                     UPDATE tasks

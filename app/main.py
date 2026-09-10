@@ -71,6 +71,7 @@ app = FastAPI(
     description="Morpheus Protocol autonomous Web3 development agent",
     version=__version__,
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 app.add_middleware(
@@ -101,11 +102,25 @@ async def agent_error_handler(_request: Request, exc: AgentError):
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_error_handler(_request: Request, exc: RequestValidationError):
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    path = request.url.path
     messages = []
     for err in exc.errors():
         loc = ".".join(str(x) for x in err.get("loc", []) if x != "body")
         messages.append(f"{loc}: {err.get('msg')}" if loc else str(err.get("msg")))
+    # OpenAI-shaped errors for Arena chat routes
+    if path in {"/", "/v1/chat/completions", "/v1/chat/completions/", "/chat/completions", "/chat/completions/"}:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": "; ".join(messages) or "Request validation failed.",
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": None,
+                }
+            },
+        )
     return JSONResponse(
         status_code=422,
         content={
@@ -122,6 +137,19 @@ async def validation_error_handler(_request: Request, exc: RequestValidationErro
 @app.get("/")
 async def root():
     settings = get_settings()
+    endpoints = [
+        "/health",
+        "/morpheus/verify",
+        "/capabilities",
+        "/api/tasks",
+        "/api/tasks/{task_id}",
+        "/callbacks/morpheus",
+        "/version",
+        "/v1/models",
+        "/v1/chat/completions",
+    ]
+    if settings.environment != "production":
+        endpoints.append("/sentry-debug")
     return {
         "service": "web3dev-ai",
         "name": settings.agent_name,
@@ -129,18 +157,7 @@ async def root():
         "status": settings.service_state,
         "docs": "/docs",
         "openai_compatible": True,
-        "endpoints": [
-            "/health",
-            "/morpheus/verify",
-            "/capabilities",
-            "/api/tasks",
-            "/api/tasks/{task_id}",
-            "/callbacks/morpheus",
-            "/version",
-            "/v1/models",
-            "/v1/chat/completions",
-            "/sentry-debug",
-        ],
+        "endpoints": endpoints,
     }
 
 
@@ -148,19 +165,36 @@ async def root():
 async def root_chat_completions(
     body: ChatCompletionRequest,
     authorization: str | None = Header(default=None),
+    api_key: str | None = Header(default=None, alias="api-key"),
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
 ):
     """Morpheus Arena OPENAI format posts to the endpoint root → avoid HTTP 405."""
-    return await create_chat_completion(body, authorization)
+    return await create_chat_completion(
+        body, authorization=authorization, api_key=api_key, x_api_key=x_api_key
+    )
 
 
 @app.get("/sentry-debug")
 async def sentry_debug():
-    """Intentional error to verify Sentry issue capture (Sentry FastAPI docs)."""
-    # Equivalent verification to calling an undefined function in JS examples.
+    """Intentional error for Sentry verification — disabled in production."""
+    settings = get_settings()
+    if settings.environment == "production":
+        return JSONResponse(
+            status_code=404,
+            content={
+                "success": False,
+                "error": {
+                    "code": "INVALID_REQUEST",
+                    "message": "Not found.",
+                    "retryable": False,
+                },
+            },
+        )
     my_undefined_function()  # noqa: F821
 
 
 @app.get("/capabilities")
+@app.get("/capabilities/")
 async def capabilities():
     settings = get_settings()
     catalog = {
@@ -204,6 +238,7 @@ async def capabilities():
 
 
 @app.get("/version")
+@app.get("/version/")
 async def version():
     settings = get_settings()
     from app.core.sentry import _initialized as sentry_on

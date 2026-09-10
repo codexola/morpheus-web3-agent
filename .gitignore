@@ -23,6 +23,7 @@ htmlcov/
 .env
 .env.local
 .env.*.local
+!.env.example
 *.pem
 secrets/
 
@@ -44,4 +45,3 @@ data/
 # Logs
 *.log
 logs/
-.env*

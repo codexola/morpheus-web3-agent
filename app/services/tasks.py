@@ -62,15 +62,24 @@ class MemoryTaskStore:
             self._by_external[task.external_task_id] = task.task_id
             return task, True
 
-    async def claim_for_processing(self, task_id: str) -> tuple[InternalTask | None, bool]:
+    async def claim_for_processing(
+        self, task_id: str, *, stale_after_seconds: float = 90.0
+    ) -> tuple[InternalTask | None, bool]:
         async with self._lock:
             task = self._by_id.get(task_id)
             if not task:
                 return None, False
-            if task.status in {TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.PROCESSING}:
+            if task.status in {TaskStatus.SUCCESS, TaskStatus.FAILED}:
                 return task, False
+            now = datetime.now(timezone.utc)
+            if task.status == TaskStatus.PROCESSING:
+                started = task.started_at or task.created_at
+                age = (now - started).total_seconds()
+                if age < stale_after_seconds:
+                    return task, False
+                # Stale PROCESSING (serverless kill) → reclaim
             task.status = TaskStatus.PROCESSING
-            task.started_at = datetime.now(timezone.utc)
+            task.started_at = now
             self._by_id[task.task_id] = task
             return task, True
 
@@ -152,7 +161,31 @@ async def process_task(task_id: str) -> InternalTask:
         )
     except Exception:
         pass
+    await _deliver_callback(task)
     return task
+
+
+async def _deliver_callback(task: InternalTask) -> None:
+    if not task.callback_url:
+        return
+    try:
+        assert_safe_url(task.callback_url)
+        import httpx
+        from app.services.results import public_result
+
+        settings = get_settings()
+        headers = {"Content-Type": "application/json"}
+        secret = settings.callback_shared_secret or settings.morpheus_shared_secret
+        if secret:
+            headers["X-Callback-Secret"] = secret
+        async with httpx.AsyncClient(timeout=settings.http_timeout_seconds) as client:
+            await client.post(task.callback_url, json=public_result(task), headers=headers)
+        logger.info("callback_delivered", extra={"status": "ok", "task_id": task.task_id})
+    except Exception as exc:
+        logger.warning(
+            "callback_failed",
+            extra={"error_class": type(exc).__name__, "task_id": task.task_id},
+        )
 
 
 async def submit_and_process(raw: TaskSubmitRequest) -> InternalTask:
@@ -165,5 +198,6 @@ async def submit_and_process(raw: TaskSubmitRequest) -> InternalTask:
             latest = await get_store().get(task.task_id)
             if latest and latest.status in {TaskStatus.SUCCESS, TaskStatus.FAILED}:
                 return latest
-        return task
+        # Possibly stale after wait — try reclaim/process
+        return await process_task(task.task_id)
     return await process_task(task.task_id)

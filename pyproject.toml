@@ -1,6 +1,6 @@
 [project]
 name = "morpheus-web3-agent"
-version = "1.0.0"
+version = "1.2.1"
 description = "Web3Dev AI — Morpheus Protocol autonomous Web3 development agent"
 readme = "README.md"
 requires-python = ">=3.12"

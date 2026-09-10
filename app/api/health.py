@@ -12,6 +12,7 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
+@router.get("/health/")
 async def health() -> dict:
     settings = get_settings()
     online = settings.is_online

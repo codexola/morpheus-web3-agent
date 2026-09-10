@@ -36,7 +36,7 @@ def init_sentry() -> bool:
             dsn=dsn,
             environment=settings.environment or os.getenv("VERCEL_ENV") or "development",
             release=release,
-            send_default_pii=True,
+            send_default_pii=False,
             traces_sample_rate=1.0 if settings.environment != "production" else 0.2,
             integrations=[
                 StarletteIntegration(transaction_style="endpoint"),

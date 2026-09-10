@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Production smoke tests."""
+"""Production smoke tests including Arena OpenAI surface."""
 
 from __future__ import annotations
 
@@ -10,18 +10,28 @@ import httpx
 
 def main(base: str) -> int:
     base = base.rstrip("/")
-    paths = ["/", "/health", "/morpheus/verify", "/capabilities", "/version"]
     ok = True
-    with httpx.Client(timeout=30.0) as client:
-        for path in paths:
-            url = f"{base}{path}"
-            try:
-                r = client.get(url)
-                print(f"{r.status_code} GET {path}")
-                if r.status_code != 200:
-                    ok = False
-            except Exception as exc:
-                print(f"ERR  GET {path}: {exc}")
+    with httpx.Client(timeout=60.0, follow_redirects=False) as client:
+        for path in ["/", "/health", "/morpheus/verify", "/capabilities", "/version", "/v1/models"]:
+            r = client.get(f"{base}{path}")
+            print(f"{r.status_code} GET {path}")
+            if r.status_code != 200:
+                ok = False
+
+        for path in ["/", "/v1/chat/completions", "/v1/chat/completions/"]:
+            r = client.post(
+                f"{base}{path}",
+                json={
+                    "model": "web3dev-ai",
+                    "messages": [{"role": "user", "content": "smoke ping"}],
+                    "stream": False,
+                },
+            )
+            print(f"{r.status_code} POST {path}")
+            if r.status_code != 200:
+                ok = False
+            elif path.endswith("/") and r.is_redirect:
+                print("ERR unexpected redirect on trailing slash")
                 ok = False
 
         payload = {

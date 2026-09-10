@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import os
 import secrets
 import time
 import uuid
 from typing import Any
 
 from fastapi import APIRouter, Header, Request
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.config import get_settings
-from app.core.exceptions import AgentError
 from app.llm.client import get_llm
 
 router = APIRouter(tags=["openai-compat"])
@@ -21,7 +23,12 @@ DEFAULT_MODEL = "web3dev-ai"
 
 class ChatMessage(BaseModel):
     role: str
-    content: str | list[Any] = ""
+    content: str | list[Any] | None = ""
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def coerce_null_content(cls, value: Any) -> Any:
+        return "" if value is None else value
 
 
 class ChatCompletionRequest(BaseModel):
@@ -32,7 +39,29 @@ class ChatCompletionRequest(BaseModel):
     stream: bool | None = False
 
 
-def _message_text(content: str | list[Any]) -> str:
+def openai_error(
+    message: str,
+    *,
+    status_code: int = 400,
+    err_type: str = "invalid_request_error",
+    code: str | None = None,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "message": message,
+                "type": err_type,
+                "param": None,
+                "code": code,
+            }
+        },
+    )
+
+
+def _message_text(content: str | list[Any] | None) -> str:
+    if content is None:
+        return ""
     if isinstance(content, str):
         return content
     parts: list[str] = []
@@ -44,38 +73,56 @@ def _message_text(content: str | list[Any]) -> str:
     return "\n".join(parts)
 
 
-def _require_optional_bearer(authorization: str | None) -> None:
-    """If ARENA_API_KEY / MORPHEUS_SHARED_SECRET is set, require matching Bearer token."""
+def _expected_api_key() -> str:
     settings = get_settings()
-    expected = (settings.morpheus_shared_secret or "").strip()
-    # Prefer dedicated arena key when present
-    import os
-
-    expected = (os.getenv("ARENA_API_KEY") or expected).strip()
-    if not expected:
-        return
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise AgentError("UNAUTHORIZED", "Missing Bearer token.", status_code=401)
-    provided = authorization.split(" ", 1)[1].strip()
-    if not secrets.compare_digest(provided, expected):
-        raise AgentError("UNAUTHORIZED", "Invalid Bearer token.", status_code=401)
+    return (os.getenv("ARENA_API_KEY") or settings.morpheus_shared_secret or "").strip()
 
 
-async def create_chat_completion(
-    body: ChatCompletionRequest,
+def _extract_token(
+    authorization: str | None,
+    api_key: str | None,
+    x_api_key: str | None,
+) -> str | None:
+    if authorization:
+        parts = authorization.strip().split(None, 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1].strip()
+        # Some clients send raw token in Authorization
+        if len(parts) == 1:
+            return parts[0].strip()
+    for candidate in (api_key, x_api_key):
+        if candidate and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _require_optional_auth(
     authorization: str | None = None,
-) -> dict[str, Any]:
-    _require_optional_bearer(authorization)
-    if body.stream:
-        # Arena test typically uses non-streaming; reject stream with clear error.
-        raise AgentError(
-            "INVALID_REQUEST",
-            "Streaming is not enabled on this endpoint. Set stream=false.",
-            status_code=400,
+    api_key: str | None = None,
+    x_api_key: str | None = None,
+) -> JSONResponse | None:
+    expected = _expected_api_key()
+    if not expected:
+        return None
+    provided = _extract_token(authorization, api_key, x_api_key)
+    if not provided:
+        return openai_error(
+            "Missing authentication. Provide Authorization: Bearer <token> or api-key.",
+            status_code=401,
+            err_type="invalid_request_error",
+            code="invalid_api_key",
         )
-    if not body.messages:
-        raise AgentError("INVALID_REQUEST", "messages is required.", status_code=400)
+    if not secrets.compare_digest(provided, expected):
+        return openai_error(
+            "Invalid authentication credentials.",
+            status_code=401,
+            err_type="invalid_request_error",
+            code="invalid_api_key",
+        )
+    return None
 
+
+async def _generate_content(body: ChatCompletionRequest) -> tuple[str, str]:
     model = (body.model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
     system_extra = (
         "You are Web3Dev AI, a helpful Web3 development assistant. "
@@ -88,8 +135,6 @@ async def create_chat_completion(
                 system_extra = text
                 break
 
-    prompt_len = sum(len(_message_text(m.content)) for m in body.messages)
-
     llm = get_llm()
     if llm.available:
         try:
@@ -99,11 +144,12 @@ async def create_chat_completion(
             client = AsyncOpenAI(
                 api_key=settings.openai_api_key,
                 timeout=settings.llm_timeout_seconds,
+                max_retries=settings.max_llm_retries,
             )
-            resp = await client.chat.completions.create(
-                model=settings.fast_model or settings.primary_model,
-                temperature=body.temperature if body.temperature is not None else 0.2,
-                messages=[
+            kwargs: dict[str, Any] = {
+                "model": settings.fast_model or settings.primary_model,
+                "temperature": body.temperature if body.temperature is not None else 0.2,
+                "messages": [
                     {"role": "system", "content": system_extra},
                     *[
                         {"role": m.role, "content": _message_text(m.content)}
@@ -111,7 +157,10 @@ async def create_chat_completion(
                         if m.role != "system"
                     ],
                 ],
-            )
+            }
+            if body.max_tokens:
+                kwargs["max_tokens"] = body.max_tokens
+            resp = await client.chat.completions.create(**kwargs)
             content = (resp.choices[0].message.content or "").strip()
         except Exception as exc:
             content = (
@@ -123,13 +172,14 @@ async def create_chat_completion(
             "Web3Dev AI endpoint is online. OPENAI_API_KEY is not configured on this "
             "deployment, so this is a connectivity confirmation reply."
         )
+    return model, content
 
-    completion_id = f"chatcmpl_{uuid.uuid4().hex[:24]}"
-    created = int(time.time())
+
+def _completion_payload(model: str, content: str, prompt_len: int) -> dict[str, Any]:
     return {
-        "id": completion_id,
+        "id": f"chatcmpl_{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
-        "created": created,
+        "created": int(time.time()),
         "model": model,
         "choices": [
             {
@@ -146,7 +196,58 @@ async def create_chat_completion(
     }
 
 
+async def create_chat_completion(
+    body: ChatCompletionRequest,
+    *,
+    authorization: str | None = None,
+    api_key: str | None = None,
+    x_api_key: str | None = None,
+) -> dict[str, Any] | JSONResponse | StreamingResponse:
+    auth_err = _require_optional_auth(authorization, api_key, x_api_key)
+    if auth_err is not None:
+        return auth_err
+    if not body.messages:
+        return openai_error("messages is required", code="invalid_request_error")
+
+    prompt_len = sum(len(_message_text(m.content)) for m in body.messages)
+    model, content = await _generate_content(body)
+
+    if body.stream:
+        completion_id = f"chatcmpl_{uuid.uuid4().hex[:24]}"
+        created = int(time.time())
+
+        async def event_stream():
+            chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": content},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(chunk)}\n\n"
+            done = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+            yield f"data: {json.dumps(done)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    return _completion_payload(model, content, prompt_len)
+
+
 @router.get("/v1/models")
+@router.get("/v1/models/")
 async def list_models():
     settings = get_settings()
     return {
@@ -169,16 +270,26 @@ async def list_models():
 
 
 @router.post("/v1/chat/completions")
+@router.post("/v1/chat/completions/")
 async def chat_completions(
     body: ChatCompletionRequest,
     authorization: str | None = Header(default=None),
+    api_key: str | None = Header(default=None, alias="api-key"),
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
 ):
-    return await create_chat_completion(body, authorization)
+    return await create_chat_completion(
+        body, authorization=authorization, api_key=api_key, x_api_key=x_api_key
+    )
 
 
 @router.post("/chat/completions")
+@router.post("/chat/completions/")
 async def chat_completions_alias(
     body: ChatCompletionRequest,
     authorization: str | None = Header(default=None),
+    api_key: str | None = Header(default=None, alias="api-key"),
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
 ):
-    return await create_chat_completion(body, authorization)
+    return await create_chat_completion(
+        body, authorization=authorization, api_key=api_key, x_api_key=x_api_key
+    )

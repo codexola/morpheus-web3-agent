@@ -1,0 +1,11 @@
+.agents
+.claude
+.github
+docs
+tests
+scripts
+skills-lock.json
+*.md
+!README.md
+.env*
+!.env.example
